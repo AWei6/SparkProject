@@ -144,8 +144,9 @@ object OdsBaseLogApp {
                     val actionId: String = actionObj.getString("action_id")
                     val actionItem: String = actionObj.getString("item")
                     val actionItemType: String = actionObj.getString("item_type")
-                    val pageActionLog : PageActionLog = PageActionLog(mid,uid,ar,ch,isNew,md,os,vc,ba,pageId,lastPageId,pageItem,pageItemType,sourceType,duringTime,actionId,actionItem,actionItemType,ts)
-                    MyKafkaUtils.send(DWD_PAGE_ACTION_TOPIC,JSON.toJSONString(pageActionLog,new SerializeConfig(true)))
+                    val actionTs: lang.Long = actionObj.getLong("ts")
+                    val pageActionLog: PageActionLog = PageActionLog(mid, uid, ar, ch, isNew, md, os, vc, ba, pageId, lastPageId, pageItem, pageItemType, sourceType, duringTime, actionId, actionItem, actionItemType, actionTs, ts)
+                    MyKafkaUtils.send(DWD_PAGE_ACTION_TOPIC, JSON.toJSONString(pageActionLog, new SerializeConfig(true)))
                   }
                 }
               }
