@@ -100,8 +100,8 @@ object MyKafkaUtils {
   /**
    * 生产（按照key进行分区）
    */
-  def send(topic : String, key : String, msg : String): Unit ={
-    producer.send(new ProducerRecord[String,String](topic, key, msg))
+  def send(topic: String, key: String, msg: String): Unit = {
+    producer.send(new ProducerRecord[String, String](topic, key, msg))
   }
 
   /**
@@ -109,6 +109,13 @@ object MyKafkaUtils {
    */
   def close(): Unit = {
     if (producer != null) producer.close()
+  }
+
+  /**
+   * 刷写：将缓冲区数据刷写到磁盘
+   */
+  def flush(): Unit = {
+    producer.flush()
   }
 
 }
