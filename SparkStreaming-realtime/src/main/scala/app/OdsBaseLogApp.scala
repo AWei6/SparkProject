@@ -4,10 +4,12 @@ import bean.{PageActionLog, PageDisplayLog, PageLog, StartLog}
 import com.alibaba.fastjson.serializer.SerializeConfig
 import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
 import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
 import org.apache.spark.streaming.dstream.{DStream, InputDStream}
+import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
-import util.MyKafkaUtils
+import utils.{MyKafkaUtils, MyOffsetsUtils}
 
 import java.lang
 
@@ -31,16 +33,36 @@ object OdsBaseLogApp {
     //1、准备实时环境
     //TODO 注意并行度与Kafka中topic的分区个数的对应关系
     val conf = new SparkConf().setAppName("ods_base_log_app").setMaster("local[4]")
-    val ssc = new StreamingContext(conf,Seconds(5))
+    val ssc = new StreamingContext(conf, Seconds(5))
 
     //2、从kafka中消费数据
-    val topicName : String = "ODS_BASE_LOG_0522" // 对应生成器配置中的主题名
-    val groupId : String = "ODS_BASE_LOG_GROUP_0522"
-    val kafkaDStream: InputDStream[ConsumerRecord[String, String]] = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId)
+    val topicName: String = "ODS_BASE_LOG_0522" // 对应生成器配置中的主题名
+    val groupId: String = "ODS_BASE_LOG_GROUP_0522"
+
+    //从Redis中读取offset，指定offset进行消费
+    var kafkaDStream: InputDStream[ConsumerRecord[String, String]] = null
+    val offsets: Map[TopicPartition, Long] = MyOffsetsUtils.readOffset(topicName, groupId)
+    if (offsets != null && offsets.nonEmpty) {
+      //指定offset进行消费
+      kafkaDStream = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId, offsets)
+    } else {
+      //默认offset进行消费
+      kafkaDStream = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId)
+    }
+
+
+    //补充：从当前消费到的数据中提取Offsets，不对流中的数据做任何处理
+    var offsetRanges: Array[OffsetRange] = null
+    val offsetRangesDStream: DStream[ConsumerRecord[String, String]] = kafkaDStream.transform(
+      rdd => {
+        offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges //在Driver中执行
+        rdd
+      }
+    )
 
     //3、处理数据
     //3.1、转换数据结构
-    val jsonDStream: DStream[JSONObject] = kafkaDStream.map(
+    val jsonDStream: DStream[JSONObject] = offsetRangesDStream.map(
       consumerRecord => {
         //获取ConsumerRecord中的value，value就是日志数据
         val log: String = consumerRecord.value()
@@ -152,20 +174,24 @@ object OdsBaseLogApp {
               }
               //启动数据
               val startObj: JSONObject = jsonObj.getJSONObject("start")
-              if(startObj != null){
+              if(startObj != null) {
                 val entry: String = startObj.getString("entry")
                 val openAdId: String = startObj.getString("open_ad_id")
                 val loadingTime: lang.Long = startObj.getLong("loading_time")
                 val openAdMs: lang.Long = startObj.getLong("open_ad_ms")
                 val openAdSkipMs: lang.Long = startObj.getLong("open_ad_skip_ms")
-                val startLog : StartLog = StartLog(mid,uid,ar,ch,isNew,md,os,vc,entry,openAdId,loadingTime,openAdMs,openAdSkipMs,ts)
-                MyKafkaUtils.send(DWD_START_LOG_TOPIC,JSON.toJSONString(startLog,new SerializeConfig(true)))
+                val startLog: StartLog = StartLog(mid, uid, ar, ch, isNew, md, os, vc, entry, openAdId, loadingTime, openAdMs, openAdSkipMs, ts)
+                MyKafkaUtils.send(DWD_START_LOG_TOPIC, JSON.toJSONString(startLog, new SerializeConfig(true)))
               }
             }
+            // foreach里面：提交offset？？？ executor执行，这里不行
           }
         )
+        //foreachRDD里面，foreach外面：提交offset？？？Driver端执行，一批次执行一次（周期性）
+        MyOffsetsUtils.saveOffset(topicName, groupId, offsetRanges)
       }
     )
+    //foreachRDD外面：提交offset？？？ Driver执行，每次启动程序执行一次，这里不行
 
     ssc.start()
     ssc.awaitTermination()

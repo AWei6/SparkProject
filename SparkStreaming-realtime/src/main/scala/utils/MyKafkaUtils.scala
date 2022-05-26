@@ -1,8 +1,9 @@
-package util
+package utils
 
 import java.util.HashMap
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import org.apache.kafka.common.TopicPartition
 import org.apache.spark.streaming.StreamingContext
 import org.apache.spark.streaming.dstream.InputDStream
 import org.apache.spark.streaming.kafka010.{ConsumerStrategies, KafkaUtils, LocationStrategies}
@@ -35,11 +36,11 @@ object MyKafkaUtils {
   )
 
   /**
-   * 基于SparkStreaming消费，获取到KafkaDStream
+   * 基于SparkStreaming消费，获取到KafkaDStream，使用默认的offset
    */
-  def getKafkaDStream(ssc : StreamingContext, topic : String, groupId : String): InputDStream[ConsumerRecord[String,String]] ={
-    consumerConfigs.put(ConsumerConfig.GROUP_ID_CONFIG,groupId)
-    val kafkaDStream: InputDStream[ConsumerRecord[String,String]] = KafkaUtils.createDirectStream(
+  def getKafkaDStream(ssc: StreamingContext, topic: String, groupId: String): InputDStream[ConsumerRecord[String, String]] = {
+    consumerConfigs.put(ConsumerConfig.GROUP_ID_CONFIG, groupId)
+    val kafkaDStream: InputDStream[ConsumerRecord[String, String]] = KafkaUtils.createDirectStream(
       ssc,
       LocationStrategies.PreferConsistent,
       ConsumerStrategies.Subscribe[String, String](Array(topic), consumerConfigs)
@@ -48,9 +49,22 @@ object MyKafkaUtils {
   }
 
   /**
+   * 基于SparkStreaming消费，获取到KafkaDStream，使用指定的offset
+   */
+  def getKafkaDStream(ssc: StreamingContext, topic: String, groupId: String, offsets: Map[TopicPartition, Long]): InputDStream[ConsumerRecord[String, String]] = {
+    consumerConfigs.put(ConsumerConfig.GROUP_ID_CONFIG, groupId)
+    val kafkaDStream: InputDStream[ConsumerRecord[String, String]] = KafkaUtils.createDirectStream(
+      ssc,
+      LocationStrategies.PreferConsistent,
+      ConsumerStrategies.Subscribe[String, String](Array(topic), consumerConfigs, offsets)
+    )
+    kafkaDStream
+  }
+
+  /**
    * 生产者对象
    */
-  val producer : KafkaProducer[String, String] = createProducer()
+  val producer: KafkaProducer[String, String] = createProducer()
 
   /**
    * 创建生产者对象
@@ -93,8 +107,8 @@ object MyKafkaUtils {
   /**
    * 关闭生产者对象
    */
-//  def close(): Unit ={
-//    if(producer != null) producer.close()
-//  }
+  def close(): Unit = {
+    if (producer != null) producer.close()
+  }
 
 }
