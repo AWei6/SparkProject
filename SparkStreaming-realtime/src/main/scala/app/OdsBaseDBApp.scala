@@ -4,11 +4,14 @@ import com.alibaba.fastjson.{JSON, JSONObject}
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.streaming.dstream.{DStream, InputDStream}
 import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 import redis.clients.jedis.Jedis
 import utils.{MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
+
+import java.util
 
 /**
  * 业务数据消费分流
@@ -72,20 +75,47 @@ object OdsBaseDBApp {
 
     //  5.2、分流
 
-    //TODO 如何动态配置表清单
-    //事实表清单
-    val factTables: Array[String] = Array[String]("order_info", "order_detail" /*缺啥补啥*/)
-    //维度表清单
-    val dimTables: Array[String] = Array[String]("user_info", "base_province" /*缺啥补啥*/)
+    //Redis连接写到哪里？？？
+    //foreachRDD外面：driver，连接对象不能序列化，不能传输
+    //foreachRDD里面，foreachPartition外面：driver，连接对象不能序列化，不能传输
+    //foreachPartition里面，循环外面：executor，每分区开启一个连接，用完关闭
+    //foreachPartition里面，循环里面：executor，相当于每条数据开启一个连接，用完关闭，太频繁
 
     jsonObjDStream.foreachRDD(
       rdd => {
+        //TODO 如何动态配置表清单
+        //将表清单维护到redis中，实时任务中动态的到redis中获取清单表
+        //类型：string，list，（set），zset，hash
+        //key：FACT:TABLES  DIM:TABLES
+        //value：表名的集合
+        //写入API：sadd
+        //读取API：smembers
+        //过期：不过期
+
+        val redisFactKeys: String = "FACT:TABLES"
+        val redisDimKeys: String = "DIM:TABLES"
+        val jedis: Jedis = MyRedisUtils.getJedisFromPool()
+        //事实表清单
+        val factTables: util.Set[String] = jedis.smembers(redisFactKeys)
+        println("factTables: " + factTables)
+        //做成广播变量
+        val factTablesBC: Broadcast[util.Set[String]] = ssc.sparkContext.broadcast(factTables)
+        //维度表清单
+        val dimTables: util.Set[String] = jedis.smembers(redisDimKeys)
+        println("dimTables: " + dimTables)
+        //做成广播变量
+        val dimTablesBC: Broadcast[util.Set[String]] = ssc.sparkContext.broadcast(dimTables)
+        jedis.close()
+
         rdd.foreachPartition(
           jsonObjIter => {
+            //开启redis连接
+            val jedis: Jedis = MyRedisUtils.getJedisFromPool()
             for (jsonObj <- jsonObjIter) {
               //提取操作类型
               val operType: String = jsonObj.getString("type")
               val opValue: String = operType match {
+                case "bootstrap-insert" => "I"
                 case "insert" => "I"
                 case "update" => "U"
                 case "delete" => "D"
@@ -95,7 +125,7 @@ object OdsBaseDBApp {
               if (opValue != null) {
                 //提取表名
                 val tableName: String = jsonObj.getString("table")
-                if (factTables.contains(tableName)) {
+                if (factTablesBC.value.contains(tableName)) {
                   //事实数据
                   //提取数据
                   val data: String = jsonObj.getString("data")
@@ -103,7 +133,7 @@ object OdsBaseDBApp {
                   val dwdTopicName: String = s"DWD_${tableName.toUpperCase}_${opValue}_0522"
                   MyKafkaUtils.send(dwdTopicName, data)
                 }
-                if (dimTables.contains(tableName)) {
+                if (dimTablesBC.value.contains(tableName)) {
                   //维度数据
                   //类型：（string），list，set，zset，hash
                   //        hash：整个表存成一个hash。要考虑目前数据量大小和将来数据量增长问题及高频访问问题
@@ -119,12 +149,14 @@ object OdsBaseDBApp {
                   val dataObj: JSONObject = jsonObj.getJSONObject("data")
                   val id: String = dataObj.getString("id")
                   val redisKey: String = s"DIM:${tableName.toUpperCase}:${id}"
-                  val jedis: Jedis = MyRedisUtils.getJedisFromPool()
+                  //  在此处开关redis的连接太频繁
+                  //  val jedis: Jedis = MyRedisUtils.getJedisFromPool()
                   jedis.set(redisKey, dataObj.toJSONString)
-                  jedis.close()
                 }
               }
             }
+            //关闭redis连接
+            jedis.close()
             //刷新kafka缓冲区
             MyKafkaUtils.flush()
           }
