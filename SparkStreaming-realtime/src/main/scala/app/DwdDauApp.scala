@@ -1,7 +1,7 @@
 package app
 
-import bean.PageLog
-import com.alibaba.fastjson.JSON
+import bean.{DauInfo, PageLog}
+import com.alibaba.fastjson.{JSON, JSONObject}
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
@@ -9,9 +9,10 @@ import org.apache.spark.streaming.dstream.{DStream, InputDStream}
 import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 import redis.clients.jedis.Jedis
-import utils.{MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
+import utils.{MyBeanUtils, MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
 
 import java.text.SimpleDateFormat
+import java.time.{LocalDate, Period}
 import java.util.Date
 import scala.collection.mutable.ListBuffer
 
@@ -116,7 +117,71 @@ object DwdDauApp {
         pageLogs.iterator
       }
     )
-    redisFilterDStream.print()
+    //5.3维度关联
+    val dauInfoDStream: DStream[DauInfo] = redisFilterDStream.mapPartitions(
+      pageLogIter => {
+        val dauInfos: ListBuffer[DauInfo] = ListBuffer[DauInfo]()
+        val sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+        val jedis: Jedis = MyRedisUtils.getJedisFromPool()
+        for (pageLog <- pageLogIter) {
+          val dauInfo = new DauInfo()
+          //1、将pageLog中已有的字段拷贝到DauInfo中
+          //笨办法：将pageLog中的每个字段的值挨个提取，赋值给dauInfo中对应的字段
+          //好办法：通过对象拷贝来完成
+          MyBeanUtils.copyProperties(pageLog, dauInfo)
+          //2、补充维度
+
+          //  2.1、用户维度信息
+          val uid: String = pageLog.user_id
+          val redisUidKey = s"DIM:USER_INFO:$uid"
+          val userInfoJson: String = jedis.get(redisUidKey)
+          val userInfoJsonObj: JSONObject = JSON.parseObject(userInfoJson)
+          //    提取性别
+          val gender: String = userInfoJsonObj.getString("gender")
+          //    提取生日
+          val birthday: String = userInfoJsonObj.getString("birthday") // 1976-03-22
+          //    换算年龄
+          val birthdayLD: LocalDate = LocalDate.parse(birthday)
+          val nowLD: LocalDate = LocalDate.now()
+          val period: Period = Period.between(birthdayLD, nowLD)
+          val age: Int = period.getYears
+          //  补充到对象中
+          dauInfo.user_gender = gender
+          dauInfo.user_age = age.toString
+
+          //  2.2、地区维度信息
+          val provinceId: String = dauInfo.province_id
+          val redisProvinceKey: String = s"DIM:BASE_PROVINCE:$provinceId"
+          val provinceJson: String = jedis.get(redisProvinceKey)
+          val provinceJsonObj: JSONObject = JSON.parseObject(provinceJson)
+          val provinceName: String = provinceJsonObj.getString("name")
+          val provinceIsoCode: String = provinceJsonObj.getString("iso_code")
+          val province3166: String = provinceJsonObj.getString("iso_3166_2")
+          val provinceAreaCode: String = provinceJsonObj.getString("area_code")
+          //补充到对象中
+          dauInfo.province_name = provinceName
+          dauInfo.province_iso_code = provinceIsoCode
+          dauInfo.province_3166_2 = province3166
+          dauInfo.province_area_code = provinceAreaCode
+
+          //  2.3、日期字段处理
+          val date = new Date(pageLog.ts)
+          val dtHr: String = sdf.format(date)
+          val dtHrArr: Array[String] = dtHr.split(" ")
+          val dt: String = dtHrArr(0)
+          val hr: String = dtHrArr(1).split(":")(0)
+          // 补充到对象中
+          dauInfo.dt = dt
+          dauInfo.hr = hr
+
+          dauInfos.append(dauInfo)
+        }
+        jedis.close()
+        dauInfos.iterator
+      }
+    )
+
+    //写入到OLAP中
 
     ssc.start()
     ssc.awaitTermination()
