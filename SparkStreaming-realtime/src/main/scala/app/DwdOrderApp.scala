@@ -1,6 +1,7 @@
 package app
 
-import bean.{OrderDetail, OrderInfo}
+import bean.{OrderDetail, OrderInfo, OrderWide}
+import com.alibaba.fastjson.serializer.SerializeConfig
 import com.alibaba.fastjson.{JSON, JSONObject}
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
@@ -12,6 +13,7 @@ import redis.clients.jedis.Jedis
 import utils.{MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
 
 import java.time.{LocalDate, Period}
+import java.util
 import scala.collection.mutable.ListBuffer
 
 /**
@@ -180,6 +182,79 @@ object DwdOrderApp {
     //    让双方都多做两步操作，到缓存中找对的人，把自己写到缓存中
     val orderJoinDStream: DStream[(Long, (Option[OrderInfo], Option[OrderDetail]))] = orderInfoKVDStream.fullOuterJoin(orderDetailKVDStream)
 
+
+    val orderWideDStream: DStream[OrderWide] = orderJoinDStream.mapPartitions(
+      orderJoinIter => {
+        val jedis: Jedis = MyRedisUtils.getJedisFromPool()
+        val orderWides: ListBuffer[OrderWide] = ListBuffer[OrderWide]()
+        for ((key, (orderInfoOp, orderDetailOp)) <- orderJoinIter) {
+          //orderInfo有，orderDetail有
+          if (orderInfoOp.isDefined) {
+            //取出orderInfo
+            val orderInfo: OrderInfo = orderInfoOp.get
+            if (orderDetailOp.isDefined) {
+              //取出orderDetail
+              val orderDetail: OrderDetail = orderDetailOp.get
+              //组装成orderWide
+              val orderWide = new OrderWide(orderInfo, orderDetail)
+              //放入到结果集中
+              orderWides.append(orderWide)
+            }
+            //orderInfo有，orderDetail没有
+
+            //orderInfo写缓存（这个不管orderDetail是否有没有都要写缓存）
+            //  类型：（string）、list、set、zset、hash
+            //  key：ORDERJOIN:ORDER_INFO:ID
+            //  value：json
+            //  写入API：set
+            //  读取API：get
+            //  过期：24h
+            val redisOrderInfoKey: String = s"ORDERJOIN:ORDER_INFO:${orderInfo.id}"
+            jedis.setex(redisOrderInfoKey, 24 * 3600, JSON.toJSONString(orderInfo, new SerializeConfig(true)))
+
+            //orderInfo读缓存
+            val redisOrderDetailKey: String = s"ORDERJOIN:ORDER_DETAIL:${orderInfo.id}"
+            val orderDetails: util.Set[String] = jedis.smembers(redisOrderDetailKey)
+            if (orderDetails != null && orderDetails.size() > 0) {
+              import scala.collection.JavaConverters._
+              for (orderDetailJson <- orderDetails.asScala) {
+                val orderDetail: OrderDetail = JSON.parseObject(orderDetailJson, classOf[OrderDetail])
+                //组装成orderWide
+                val orderWide = new OrderWide(orderInfo, orderDetail)
+                //加入到结果集中
+                orderWides.append(orderWide)
+              }
+            }
+          } else {
+            //orderInfo没有，orderDetail有
+            val orderDetail: OrderDetail = orderDetailOp.get
+            //读缓存
+            val redisOrderInfoKey: String = s"ORDERJOIN:ORDER_INFO:${orderDetail.order_id}"
+            val orderInfoJson: String = jedis.get(redisOrderInfoKey)
+            if (orderInfoJson != null && orderInfoJson.nonEmpty) {
+              val orderInfo: OrderInfo = JSON.parseObject(orderInfoJson, classOf[OrderInfo])
+              //组装成orderWide
+              val orderWide = new OrderWide(orderInfo, orderDetail)
+              orderWides.append(orderWide)
+            } else {
+              //写缓存
+              //  类型：string，list，（set），zset，hash
+              //  key：ORDERJOIN:ORDER_DETAIL:ORDER_ID
+              //  value：json、json......
+              //  写入API：sadd
+              //  读取API：smembers
+              //  过期：24h
+              val redisOrderDetailKey: String = s"ORDERJOIN:ORDER_DETAIL:${orderDetail.order_id}"
+              jedis.sadd(redisOrderDetailKey, JSON.toJSONString(orderDetail, new SerializeConfig(true)))
+              jedis.expire(redisOrderDetailKey, 24 * 3600)
+            }
+          }
+        }
+        jedis.close()
+        orderWides.iterator
+      }
+    )
+    orderWideDStream.print(1000)
 
     ssc.start()
     ssc.awaitTermination()
