@@ -10,7 +10,7 @@ import org.apache.spark.streaming.dstream.{DStream, InputDStream}
 import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 import redis.clients.jedis.Jedis
-import utils.{MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
+import utils.{MyEsUtils, MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
 
 import java.time.{LocalDate, Period}
 import java.util
@@ -254,7 +254,30 @@ object DwdOrderApp {
         orderWides.iterator
       }
     )
-    orderWideDStream.print(1000)
+
+    //写入ES
+    //1、索引分割，通过索引模板控制mapping、setting、aliases
+    //2、使用工具类将数据写入ES
+    orderWideDStream.foreachRDD(
+      rdd => {
+        rdd.foreachPartition(
+          orderWideIter => {
+            val orderWides: List[(String, OrderWide)] = orderWideIter.map(orderWide => (orderWide.detail_id.toString, orderWide)).toList
+            if (orderWides.size > 0) {
+              val head: (String, OrderWide) = orderWides.head
+              val date: String = head._2.create_date
+              //索引名
+              val indexName: String = s"gmall_order_wide_0522_$date"
+              //写入ES
+              MyEsUtils.bulkSave(indexName, orderWides)
+            }
+          }
+        )
+        //提交offsets
+        MyOffsetsUtils.saveOffset(orderInfoTopicName, orderInfoGroup, orderInfoOffsetRanges)
+        MyOffsetsUtils.saveOffset(orderDetailTopicName, orderDetailGroup, orderDetailOffsetRanges)
+      }
+    )
 
     ssc.start()
     ssc.awaitTermination()

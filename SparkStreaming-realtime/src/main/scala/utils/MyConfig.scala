@@ -13,4 +13,8 @@ object MyConfig {
 
   val REDIS_PASSWORD: String = "redis.password"
 
+  val ES_HOST: String = "es.host"
+
+  val ES_PORT: String = "es.port"
+
 }
