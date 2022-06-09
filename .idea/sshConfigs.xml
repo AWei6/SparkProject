@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:180}" host="master" id="bdb6c8dc-6e3f-4ceb-aaae-868c35b6c13b" port="22" nameFormat="DESCRIPTIVE" username="root" />
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:180}" host="slave1" id="b1588b92-1fc3-4942-9a1a-edc239acf00b" port="22" nameFormat="DESCRIPTIVE" username="root" />
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:180}" host="slave2" id="ab5d8b5b-7df9-426a-a60a-5f23d4c3ff7a" port="22" nameFormat="DESCRIPTIVE" username="root" />
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:180}" host="175.178.218.216" id="5488bc77-1f0c-4fef-bc6e-13db82378d30" port="22" customName="腾讯云2" nameFormat="CUSTOM" username="root">
+        <option name="customName" value="腾讯云2" />
+      </sshConfig>
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:180}" host="119.91.138.135" id="8b5ba52b-df47-432a-99f9-8539f120a32d" port="22" customName="腾讯云1" nameFormat="CUSTOM" username="root">
+        <option name="customName" value="腾讯云1" />
+      </sshConfig>
+    </configs>
+  </component>
+</project>
